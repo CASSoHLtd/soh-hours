@@ -255,6 +255,7 @@ table.rota tfoot td, table.rota tfoot th { border-bottom: 0; font-size: .78rem; 
 }
 .pill small { display: block; font: 500 .72rem var(--body); opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pill.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pill.saving { opacity: .55; }
 .worked { font: 500 .72rem var(--mono); color: var(--accent); background: var(--accent-soft); border-radius: 6px; padding: 3px 6px; font-variant-numeric: tabular-nums; }
 .worked small { display: block; font: 500 .68rem var(--body); opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .worked.away { color: var(--danger); background: var(--danger-soft); }
@@ -1518,11 +1519,27 @@ button.note-item:hover { background: var(--bg); }
     show("pickView");
   }
 
+  /* Saved copies so screens open instantly; fresh data then loads in the background. */
+  const CACHE_MAX_MS = 3 * 24 * 3600e3;
+  function cacheGet(key) { const c = store.get(key, null); return c && c.at && Date.now() - c.at < CACHE_MAX_MS ? c : null; }
+  function cachePut(key, data, extra) { try { store.set(key, Object.assign({ at: Date.now(), data: data }, extra || {})); } catch (e) {} }
+  function staffCacheKey() { return "soh-c-staff-" + me; }
+
   async function loadStaffData() {
-    const mon = mondayIso(new Date());
     try {
       const range = staffRange();
       const d = await api.getStaffData(me, range[0], range[1]);
+      if (live) cachePut(staffCacheKey(), d, { range: range.join("|") });
+      applyStaffData(d);
+      return true;
+    } catch (err) {
+      const msg = errText(err);
+      if (/PIN/.test(msg)) { staffSignOut(msg); return false; }
+      toast(msg);
+      return true;
+    }
+  }
+  function applyStaffData(d) {
       entries = d.entries || [];
       rota = d.rota || [];
       myLeave = d.myLeave || [];
@@ -1535,13 +1552,6 @@ button.note-item:hover { background: var(--bg); }
       notices = d.notices || [];
       messages = d.messages || [];
       setHolidays(d.holidays);
-      return true;
-    } catch (err) {
-      const msg = errText(err);
-      if (/PIN/.test(msg)) { staffSignOut(msg); return false; }
-      toast(msg);
-      return true;
-    }
   }
 
   function monthBounds() {
@@ -1557,6 +1567,25 @@ button.note-item:hover { background: var(--bg); }
   async function openStaff() {
     rotaPeriod = "this";
     weekOffset = 0;
+    const c = live ? cacheGet(staffCacheKey()) : null;
+    if (c && c.range === staffRange().join("|")) {
+      // Show the saved copy straight away, then swap in fresh data when it arrives.
+      applyStaffData(c.data);
+      $("whoName").textContent = me;
+      show("staffView");
+      renderStaff();
+      const before = JSON.stringify(c.data);
+      const range = staffRange();
+      try {
+        const d = await api.getStaffData(me, range[0], range[1]);
+        cachePut(staffCacheKey(), d, { range: range.join("|") });
+        if (JSON.stringify(d) !== before && !$("staffView").hidden && !busy) { applyStaffData(d); renderStaff(); }
+      } catch (err) {
+        const msg = errText(err);
+        if (/PIN/.test(msg)) staffSignOut(msg);
+      }
+      return;
+    }
     show("loading");
     if (!(await loadStaffData())) return;
     $("whoName").textContent = me;
@@ -1984,15 +2013,19 @@ button.note-item:hover { background: var(--bg); }
     const err = m => { $("msgErr").textContent = m; $("msgErr").hidden = !m; };
     err("");
     if (!txt) return err("Write a message first.");
-    $("msgSend").disabled = true;
+    const temp = { id: "tmp" + Date.now(), staff: me, from: "staff", at: Date.now(), text: txt, read: false };
+    messages.push(temp);
+    $("msgText").value = "";
+    renderMessages();
     try {
       const m = await api.sendMessage(me, txt);
-      messages.push(m);
-      $("msgText").value = "";
+      messages[messages.indexOf(temp)] = m;
       renderMessages();
       toast("Sent to Jackie");
-    } catch (e) { err(errText(e)); }
-    $("msgSend").disabled = false;
+    } catch (e) {
+      messages.splice(messages.indexOf(temp), 1); renderMessages();
+      $("msgText").value = txt; err(errText(e));
+    }
   }
 
   function openEntry() { return entries.find(e => e.open); }
@@ -2251,17 +2284,49 @@ button.note-item:hover { background: var(--bg); }
     $("loginBtn").disabled = false;
   }
 
+  function admCacheKey(mon) { return "soh-c-adm-" + mon; }
+  function useCachedWeek() {
+    const c = live ? cacheGet(admCacheKey(adminMon)) : null;
+    if (!c) return false;
+    adm = c.data; setHolidays(adm.holidays);
+    return true;
+  }
   async function openAdmin() {
+    if (useCachedWeek()) {
+      show("adminView"); renderAdmin();
+      refreshAdminWeek();
+      return;
+    }
     show("loading");
     const okLoad = await loadAdminWeek();
     if (!okLoad) return;
     show("adminView");
     renderAdmin();
+    prefetchWeek(addDays(adminMon, 7));
+  }
+  // Fetch the shown week again quietly and redraw only if something changed.
+  async function refreshAdminWeek() {
+    const mon = adminMon, before = JSON.stringify(adm);
+    try {
+      const d = await api.getAdminWeek(pin, mon, addDays(mon, 6));
+      cachePut(admCacheKey(mon), d);
+      if (mon === adminMon && JSON.stringify(d) !== before && !ed && !$("adminView").hidden) { adm = d; setHolidays(adm.holidays); renderAdmin(); }
+      else if (mon === adminMon && !ed) { adm = d; }
+    } catch (err) {
+      const msg = errText(err);
+      if (/PIN/.test(msg)) { store.del("soh-pin"); pin = ""; openLogin(); $("loginErr").textContent = msg; $("loginErr").hidden = false; }
+    }
+    prefetchWeek(addDays(mon, 7));
+  }
+  function prefetchWeek(mon) {
+    if (!live || cacheGet(admCacheKey(mon))) return;
+    api.getAdminWeek(pin, mon, addDays(mon, 6)).then(d => cachePut(admCacheKey(mon), d)).catch(() => {});
   }
 
   async function loadAdminWeek() {
     try {
       adm = await api.getAdminWeek(pin, adminMon, addDays(adminMon, 6));
+      if (live) cachePut(admCacheKey(adminMon), adm);
       setHolidays(adm.holidays);
       return true;
     } catch (err) {
@@ -2275,6 +2340,7 @@ button.note-item:hover { background: var(--bg); }
   async function goWeek(delta) {
     adminMon = delta === 0 ? mondayIso(new Date()) : addDays(adminMon, delta * 7);
     closeEditor();
+    if (useCachedWeek()) { renderAdmin(); refreshAdminWeek(); return; }
     $("rotaGrid").style.opacity = ".5";
     await loadAdminWeek();
     $("rotaGrid").style.opacity = "";
@@ -2327,7 +2393,7 @@ button.note-item:hover { background: var(--bg); }
         const td = el("td", d === t ? "today" : "");
         const cell = el("div", "cell");
         adm.rota.filter(s => s.staff === name && s.date === d).sort((a, b) => a.start.localeCompare(b.start)).forEach(s => {
-          const b = el("button", "pill" + (ed && ed.id === s.id ? " sel" : ""), s.start + "–" + s.finish);
+          const b = el("button", "pill" + (ed && ed.id === s.id ? " sel" : "") + (s.saving ? " saving" : ""), s.start + "–" + s.finish);
           b.type = "button";
           if (s.note) b.appendChild(el("small", null, s.note));
           b.setAttribute("aria-label", "Edit " + name + "'s shift on " + niceDate(d) + ", " + s.start + " to " + s.finish);
@@ -2677,16 +2743,20 @@ button.note-item:hover { background: var(--bg); }
       $("adminMsgSend").disabled = false;
       return;
     }
+    const temp = { id: "tmp" + Date.now(), staff: threadStaff, from: "manager", at: Date.now(), text: txt, read: false };
+    threadMsgs.push(temp); $("adminMsgText").value = ""; renderAdminThread();
     try {
       const m = await api.sendManagerMessage(pin, threadStaff, txt);
-      threadMsgs.push(m);
-      $("adminMsgText").value = "";
+      threadMsgs[threadMsgs.indexOf(temp)] = m;
       renderAdminThread();
       const it = (adm.inbox || []).find(x => x.staff === threadStaff);
       if (it) { it.last = m.text; it.lastAt = m.at; it.lastFrom = "manager"; }
       renderInbox();
       toast("Sent to " + threadStaff);
-    } catch (e) { err(errText(e)); }
+    } catch (e) {
+      const k = threadMsgs.indexOf(temp); if (k !== -1) threadMsgs.splice(k, 1);
+      renderAdminThread(); $("adminMsgText").value = txt; err(errText(e));
+    }
     $("adminMsgSend").disabled = false;
   }
 
@@ -2887,24 +2957,31 @@ button.note-item:hover { background: var(--bg); }
     if (!start || !finish) return edErr("Enter a start and finish time.");
     if (spanMins(start, finish, 0) > 16 * 60) return edErr("A shift can't be longer than 16 hours.");
     const list = Array.from(ed.days).sort().map(d => ({ id: ed.id, staff, date: d, start, finish, note }));
-    const b = $("edSave"); b.disabled = true; b.textContent = "Saving…";
+    // Show the change on the rota at once; the spreadsheet saves it in the background.
+    const wasEdit = !!ed.id, backup = adm.rota.slice();
+    if (wasEdit) adm.rota = adm.rota.filter(s => s.id !== ed.id);
+    list.forEach((s, i) => adm.rota.push({ id: s.id || ("tmp" + Date.now() + i), staff: s.staff, date: s.date, start: s.start, finish: s.finish, note: s.note, saving: true }));
+    store.set("soh-ed-last", { start, finish });
+    closeEditor(); renderAdmin();
     try {
       await api.saveShifts(pin, list);
-      store.set("soh-ed-last", { start, finish });
-      toast(ed.id ? "Shift updated" : (list.length > 1 ? list.length + " shifts added" : "Shift added"));
-      closeEditor();
-      await loadAdminWeek(); renderAdmin();
-    } catch (err) { edErr(errText(err)); }
-    b.disabled = false; if (ed) edTally();
+      toast(wasEdit ? "Shift updated" : (list.length > 1 ? list.length + " shifts added" : "Shift added"));
+    } catch (err) {
+      adm.rota = backup; renderAdmin();
+      toast("Not saved: " + errText(err));
+    }
+    refreshAdminWeek();
   }
 
   async function deleteEditorShift() {
     if (!ed || !ed.id) return;
     try {
-      await api.deleteShift(pin, ed.id);
-      toast("Shift deleted");
-      closeEditor();
-      await loadAdminWeek(); renderAdmin();
+      const id = ed.id, backup = adm.rota.slice();
+      adm.rota = adm.rota.filter(s => s.id !== id);
+      closeEditor(); renderAdmin();
+      try { await api.deleteShift(pin, id); toast("Shift deleted"); }
+      catch (e2) { adm.rota = backup; renderAdmin(); toast("Not deleted: " + errText(e2)); }
+      refreshAdminWeek();
     } catch (err) { edErr(errText(err)); }
   }
 
@@ -2984,6 +3061,15 @@ button.note-item:hover { background: var(--bg); }
     $("loginForm").addEventListener("submit", login);
     $("loginBack").addEventListener("click", () => { if (me && myPin && staffList.indexOf(me) !== -1) openStaff(); else showPicker(); });
     $("pushOn").addEventListener("click", enablePush);
+    // Coming back to the app: quietly fetch the latest so the screen is up to date.
+    document.addEventListener("visibilitychange", async () => {
+      if (document.hidden || !live) return;
+      if (!$("adminView").hidden && pin) refreshAdminWeek();
+      else if (!$("staffView").hidden && me && myPin && !busy) {
+        const before = JSON.stringify([entries, rota, notices, messages, myLeave]);
+        if (await loadStaffData() && !$("staffView").hidden && JSON.stringify([entries, rota, notices, messages, myLeave]) !== before) renderStaff();
+      }
+    });
     $("pushLater").addEventListener("click", () => { store.set("soh-push-later", true); $("pushBar").hidden = true; });
     $("toStaff").addEventListener("click", () => { closeEditor(); if (me && myPin && staffList.indexOf(me) !== -1) openStaff(); else showPicker(); });
     $("signOut").addEventListener("click", () => {
@@ -3016,8 +3102,14 @@ button.note-item:hover { background: var(--bg); }
     $("msgAllBtn").addEventListener("click", openAll);
     $("cFrom").addEventListener("input", () => { if (!$("cTo").value || $("cTo").value < $("cFrom").value) $("cTo").value = $("cFrom").value; });
 
-    try { staffList = await api.getStaff(); }
-    catch (err) { staffList = []; toast("Couldn't reach the office spreadsheet. Check your signal."); }
+    const savedList = live ? store.get("soh-c-stafflist", null) : null;
+    if (savedList && savedList.length && me && myPin && savedList.indexOf(me) !== -1) {
+      staffList = savedList; // open straight away; refresh the list quietly
+      api.getStaff().then(l => { staffList = l; store.set("soh-c-stafflist", l); }).catch(() => {});
+    } else {
+      try { staffList = await api.getStaff(); if (live) store.set("soh-c-stafflist", staffList); }
+      catch (err) { staffList = savedList || []; toast("Couldn't reach the office spreadsheet. Check your signal."); }
+    }
 
     if (!live && !me) { me = staffList[0]; myPin = "1111"; }
     if (me && myPin && pin && store.get("soh-mgr", false) && staffList.indexOf(me) !== -1) openAdmin(); // Jackie opens on the planner
