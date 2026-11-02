@@ -92,6 +92,9 @@ header { display: flex; align-items: center; justify-content: space-between; gap
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .welcome { opacity: .92; } }
 .who { font-size: .9rem; color: var(--muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .who strong { color: var(--ink); font-weight: 600; }
+.pushbar { flex: 1 1 100%; display: flex; flex-direction: column; gap: 8px; }
+.pushbtns { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.pushbar .btn.small { min-height: 38px; padding: 6px 14px; font-size: .9rem; }
 
 .note { background: var(--note-bg); color: var(--note-ink); border-radius: 10px; padding: 10px 12px; font-size: .88rem; margin: 0; }
 
@@ -430,6 +433,10 @@ button.note-item:hover { background: var(--bg); }
     </div>
     <div class="who" id="whoBar" hidden>Signed in as <strong id="whoName"></strong> <button class="link" id="changeMe" type="button">Sign out</button></div>
     <div class="who" id="adminBar" hidden><button class="link" id="toStaff" type="button">Staff screen</button> · <button class="link" id="signOut" type="button">Sign out</button></div>
+    <div class="note pushbar" id="pushBar" hidden>
+      <span id="pushText">Get a notification on this phone when your rota, holidays or messages change.</span>
+      <span class="pushbtns"><button class="btn small" type="button" id="pushOn">Turn on notifications</button> <button class="link" type="button" id="pushLater">Not now</button></span>
+    </div>
   </header>
 
   <p class="note" id="demoNote" hidden>Preview mode: everything is saved on this device only, and anything marked Example is sample data. In this preview every staff PIN is 1111 and the manager PIN is 1234.</p>
@@ -1143,7 +1150,9 @@ button.note-item:hover { background: var(--bg); }
     setStaffTerms: (p, s, t) => gs("setStaffTerms", p, s, t),
     saveOvertime: (p, d) => gs("saveOvertime", p, d),
     staffLogin: (n, p) => gs("staffLogin", { name: n, pin: p }),
-    setStaffPin: (p, s, np) => gs("setStaffPin", p, s, np)
+    setStaffPin: (p, s, np) => gs("setStaffPin", p, s, np),
+    registerPush: (tok, dev) => gs("registerPush", me && myPin ? who() : null, tok, dev, pin || ""),
+    unregisterPush: tok => gs("unregisterPush", tok)
   } : {
     getStaff: () => ok(() => DEMO_STAFF.slice()),
     staffLogin: (n, p) => ok(() => {
@@ -1399,6 +1408,73 @@ button.note-item:hover { background: var(--bg); }
     $("app").classList.toggle("wide", view === "adminView");
     $("brandSub").textContent = view === "adminView" || view === "adminMsgView" || view === "loginView" ? "Rota" : "Hours";
     window.scrollTo(0, 0);
+    renderPushBar(view);
+  }
+
+  /* ================= Phone notifications (home-screen app only) ================= */
+  // Firebase web settings are public by design; sending is done by the spreadsheet.
+  const FB_CONFIG = { apiKey: "AIzaSyBEsHgMa5H0Gf-eEEyTpuX7dmcu35X_kMY", authDomain: "soh-hours.firebaseapp.com", projectId: "soh-hours", messagingSenderId: "825302731709", appId: "1:825302731709:web:8cba6e2fdd314b361fa0d4" };
+  const FB_VAPID = "BPIjYZZGsPhjzs_xb27v9HLyXNYpCIdndwegzi4cdg7vGVsUMkMylaCrOFc8VZpesI33PzgjCEvpcv3ffRBROfM";
+  const FB_SDK = "https://www.gstatic.com/firebasejs/10.12.2/";
+  const pushApp = typeof API_URL !== "undefined" && !!API_URL && !!FB_CONFIG.apiKey;
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  let fbReady = null;
+  function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = () => rej(new Error("Couldn't load notifications. Check your signal.")); document.head.appendChild(s); }); }
+  function loadFirebase() {
+    if (!fbReady) fbReady = loadScript(FB_SDK + "firebase-app-compat.js").then(() => loadScript(FB_SDK + "firebase-messaging-compat.js"))
+      .then(() => { if (!firebase.apps.length) firebase.initializeApp(FB_CONFIG); return firebase.messaging(); });
+    return fbReady;
+  }
+  function pushKey() { return (me || "") + "|" + (pin ? "mgr" : ""); }
+  function signedInView(view) { return ["staffView", "messagesView", "adminView", "adminMsgView"].indexOf(view) !== -1; }
+  function renderPushBar(view) {
+    const bar = $("pushBar");
+    bar.hidden = true;
+    if (!pushApp || !signedInView(view)) return;
+    if (isIOS && !standalone) {
+      if (store.get("soh-push-later", false)) return;
+      $("pushText").textContent = "To get notifications on iPhone, add this app to your Home Screen (Share › Add to Home Screen) and open it from there.";
+      $("pushOn").hidden = true; bar.hidden = false; return;
+    }
+    if (!pushSupported()) return;
+    if (Notification.permission === "granted") { refreshPush(); return; }
+    if (Notification.permission === "denied" || store.get("soh-push-later", false)) return;
+    $("pushOn").hidden = false; bar.hidden = false;
+  }
+  async function getPushToken() {
+    const messaging = await loadFirebase();
+    const reg = await navigator.serviceWorker.ready;
+    return messaging.getToken({ vapidKey: FB_VAPID, serviceWorkerRegistration: reg });
+  }
+  async function refreshPush() {
+    try {
+      const tok = await getPushToken();
+      if (!tok) return;
+      const saved = store.get("soh-push", null);
+      if (saved && saved.tok === tok && saved.key === pushKey()) return;
+      await api.registerPush(tok, navigator.userAgent.slice(0, 120));
+      store.set("soh-push", { tok: tok, key: pushKey() });
+    } catch (e) { /* try again next time the app opens */ }
+  }
+  async function enablePush() {
+    const btn = $("pushOn"); btn.disabled = true;
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") { $("pushBar").hidden = true; toast("Notifications are blocked. You can allow them in your phone's settings."); return; }
+      const tok = await getPushToken();
+      await api.registerPush(tok, navigator.userAgent.slice(0, 120));
+      store.set("soh-push", { tok: tok, key: pushKey() });
+      $("pushBar").hidden = true;
+      toast("Notifications are on for this phone");
+    } catch (e) { toast(errText(e)); }
+    finally { btn.disabled = false; }
+  }
+  function dropPush() {
+    const saved = store.get("soh-push", null);
+    store.del("soh-push");
+    if (saved && saved.tok && pushApp) api.unregisterPush(saved.tok).catch(() => {});
   }
 
   /* ================= Staff ================= */
@@ -1408,6 +1484,7 @@ button.note-item:hover { background: var(--bg); }
   function who() { return { name: me, pin: myPin }; }
   // Signs this phone out of the staff screen, e.g. after Jackie changes the PIN.
   function staffSignOut(msg) {
+    dropPush();
     myPin = ""; store.del("soh-mypin");
     if (store.get("soh-mgr", false)) { store.del("soh-mgr"); pin = ""; store.del("soh-pin"); }
     showPicker();
@@ -2906,6 +2983,8 @@ button.note-item:hover { background: var(--bg); }
     document.querySelectorAll("[data-go-admin]").forEach(b => b.addEventListener("click", () => { if (pin) openAdmin(); else openLogin(); }));
     $("loginForm").addEventListener("submit", login);
     $("loginBack").addEventListener("click", () => { if (me && myPin && staffList.indexOf(me) !== -1) openStaff(); else showPicker(); });
+    $("pushOn").addEventListener("click", enablePush);
+    $("pushLater").addEventListener("click", () => { store.set("soh-push-later", true); $("pushBar").hidden = true; });
     $("toStaff").addEventListener("click", () => { closeEditor(); if (me && myPin && staffList.indexOf(me) !== -1) openStaff(); else showPicker(); });
     $("signOut").addEventListener("click", () => {
       pin = ""; store.del("soh-pin"); closeEditor();

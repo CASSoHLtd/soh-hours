@@ -1,4 +1,4 @@
-const CACHE = "soh-d5b5fe4cd4";
+const CACHE = "soh-8d2f09bed2";
 const SHELL = ["./", "index.html", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png"];
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -26,4 +26,20 @@ self.addEventListener("fetch", e => {
   } else if (/fonts\.(googleapis|gstatic)\.com$/.test(url.hostname)) {
     e.respondWith(caches.open(CACHE).then(c => c.match(req).then(hit => hit || fetch(req).then(r => { c.put(req, r.clone()); return r; }))));
   }
+});
+// Phone notifications sent by the spreadsheet (via Firebase Cloud Messaging).
+self.addEventListener("push", e => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (err) { d = { body: e.data ? e.data.text() : "" }; }
+  const m = Object.assign({}, d.notification || {}, d.data || {}, d.title ? d : {});
+  e.waitUntil(self.registration.showNotification(m.title || "Slice of Heaven", {
+    body: m.body || "You have a new update.", icon: "icon-192.png", badge: "icon-192.png"
+  }));
+});
+self.addEventListener("notificationclick", e => {
+  e.notification.close();
+  e.waitUntil(clients.matchAll({ type: "window", includeUncontrolled: true }).then(list => {
+    for (const c of list) if ("focus" in c) return c.focus();
+    return clients.openWindow("./");
+  }));
 });
