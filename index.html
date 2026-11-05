@@ -223,6 +223,7 @@ details.card form { margin-top: 14px; }
 /* Manager */
 .weekbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: -8px; }
 .weekbar .legend { margin-left: auto; padding-left: 8px; }
+.fillrow { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .weeknav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .icon-btn { font: 600 1.2rem var(--body); width: 42px; height: 42px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
@@ -728,7 +729,10 @@ button.note-item:hover { background: var(--bg); }
       <div class="legend" aria-label="Key"><span><i class="lp"></i>On the rota</span><span><i class="lw"></i>Clocked hours</span><span><i class="ll"></i>Holiday</span></div>
     </div>
     <div class="gridwrap"><table class="rota" id="rotaGrid"></table></div>
-    <p class="sub">Staff get an update when their shifts change. Tap a shift to change it, or + to add one.</p>
+    <div class="fillrow">
+      <p class="sub" style="margin:0">Staff get an update when their shifts change. Tap a shift to change it, or + to add one.</p>
+      <button class="btn ghost" type="button" id="fillUsual">Add usual hours</button>
+    </div>
 
     <section class="card" id="otCard" aria-labelledby="otTitle">
       <div class="card-head"><h2 id="otTitle">Overtime</h2><span class="sub" id="otWeek"></span></div>
@@ -1141,6 +1145,7 @@ button.note-item:hover { background: var(--bg); }
     saveShifts: (p, list) => gs("saveShifts", p, list),
     deleteShift: (p, id) => gs("deleteShift", p, id),
     copyWeek: (p, a, b) => gs("copyWeek", p, a, b),
+    fillUsualHours: (p, m) => gs("fillUsualHours", p, m),
     getMonth: (s, ym) => gs("getMonth", who(), ym),
     requestLeave: (s, a, b, n, h) => gs("requestLeave", who(), a, b, n, h == null ? "" : h),
     markNoticesRead: (s, ids) => gs("markNoticesRead", who(), ids),
@@ -1394,6 +1399,7 @@ button.note-item:hover { background: var(--bg); }
       if (!(d >= 0 && d <= max)) throw new Error("Enter an entitlement between 0 and " + max + " " + (u === "hours" ? "hours" : "days") + ".");
       Object.assign(db().terms[s], { entitlement: Math.round(d * 2) / 2, unit: u === "hours" ? "hours" : "days" }); dbSave(); return true;
     }),
+    fillUsualHours: (p, m) => ok(() => { demoPin(p); throw new Error("Usual hours aren't available in the demo."); }),
     copyWeek: (p, a, b) => ok(() => {
       demoPin(p);
       const src = db().rota.filter(r => r.date >= a && r.date <= addDays(a, 6));
@@ -1416,6 +1422,8 @@ button.note-item:hover { background: var(--bg); }
     $("adminBar").hidden = view !== "adminView" && view !== "adminMsgView";
     $("app").classList.toggle("wide", view === "adminView");
     $("brandSub").textContent = view === "adminView" || view === "adminMsgView" || view === "loginView" ? "Rota" : "Hours";
+    // Only people with a manager role (Jackie, Debbi) see the link to the rota planner.
+    document.querySelectorAll("[data-go-admin]").forEach(b => { b.parentElement.hidden = !canManage(); });
     window.scrollTo(0, 0);
     renderPushBar(view);
   }
@@ -1491,11 +1499,13 @@ button.note-item:hover { background: var(--bg); }
   let me = store.get("soh-me", null);
   let myPin = store.get("soh-mypin", "");
   function who() { return { name: me, pin: myPin }; }
+  function canManage() { return !!(me && myPin && (store.get("soh-canmgr", false) || store.get("soh-mgr", false))); }
   // Signs this phone out of the staff screen, e.g. after Jackie changes the PIN.
   function staffSignOut(msg) {
     dropPush();
     myPin = ""; store.del("soh-mypin");
     if (store.get("soh-mgr", false)) { store.del("soh-mgr"); pin = ""; store.del("soh-pin"); }
+    store.del("soh-canmgr");
     showPicker();
     if (msg) { $("pickErr").textContent = msg; $("pickErr").hidden = false; }
   }
@@ -3005,6 +3015,16 @@ button.note-item:hover { background: var(--bg); }
     b.disabled = false; b.textContent = "Copy last week's rota";
   }
 
+  async function fillUsualHours() {
+    const b = $("fillUsual"); b.disabled = true; b.textContent = "Adding…";
+    try {
+      const saved = await api.fillUsualHours(pin, adminMon);
+      toast(saved.length === 1 ? "1 usual shift added" : saved.length + " usual shifts added");
+      await loadAdminWeek(); renderAdmin();
+    } catch (err) { toast(errText(err)); }
+    b.disabled = false; b.textContent = "Add usual hours";
+  }
+
   /* ================= Start ================= */
   async function start() {
     $("demoNote").hidden = live;
@@ -3057,6 +3077,7 @@ button.note-item:hover { background: var(--bg); }
         me = v; myPin = p; store.set("soh-me", me);
         if (keep) store.set("soh-mypin", p); else store.del("soh-mypin");
         store.set("soh-mgr", !!(res && res.manager));
+        store.set("soh-canmgr", !!(res && (res.manager || res.canManage)));
         if (res && res.manager) { pin = p; if (keep) store.set("soh-pin", p); else store.del("soh-pin"); adminMon = mondayIso(new Date()); openAdmin(); }
         else openStaff();
       } catch (e) { err(errText(e)); $("pickPin").select(); }
@@ -3067,7 +3088,10 @@ button.note-item:hover { background: var(--bg); }
     document.addEventListener("visibilitychange", () => { if (!document.hidden && !$("staffView").hidden) { weekOffset = 0; loadStaffData().then(renderStaff); } });
 
     // manager wiring
-    document.querySelectorAll("[data-go-admin]").forEach(b => b.addEventListener("click", () => { if (pin) openAdmin(); else openLogin(); }));
+    document.querySelectorAll("[data-go-admin]").forEach(b => b.addEventListener("click", () => {
+      if (!pin && canManage()) pin = myPin; // their own PIN opens the planner
+      if (pin) openAdmin(); else openLogin();
+    }));
     $("loginForm").addEventListener("submit", login);
     $("loginBack").addEventListener("click", () => { if (me && myPin && staffList.indexOf(me) !== -1) openStaff(); else showPicker(); });
     $("pushOn").addEventListener("click", enablePush);
@@ -3092,6 +3116,7 @@ button.note-item:hover { background: var(--bg); }
     $("nextWeek").addEventListener("click", () => goWeek(1));
     $("thisWeek").addEventListener("click", () => goWeek(0));
     $("copyWeek").addEventListener("click", copyLastWeek);
+    $("fillUsual").addEventListener("click", fillUsualHours);
     $("edForm").addEventListener("submit", saveEditor);
     $("edClose").addEventListener("click", () => { closeEditor(); renderGrid(); });
     ["edStart", "edFinish"].forEach(id => $(id).addEventListener("input", () => { renderPresets(); edTally(); }));
