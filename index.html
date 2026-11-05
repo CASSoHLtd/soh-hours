@@ -251,7 +251,7 @@ table.rota tfoot td, table.rota tfoot th { border-bottom: 0; font-size: .78rem; 
 .pill {
   display: block; width: 100%; text-align: left; cursor: pointer;
   background: var(--plan); border: 1px solid var(--plan-line); color: var(--plan-ink);
-  border-radius: 8px; padding: 5px 5px; font: 600 .76rem var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap;
+  border-radius: 8px; padding: 5px 4px; font: 600 .8rem var(--body); font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 .pill small { display: block; font: 500 .72rem var(--body); opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pill.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -275,7 +275,7 @@ table.rota tfoot td, table.rota tfoot th { border-bottom: 0; font-size: .78rem; 
   table.rota td { padding: 2px; width: 43px; min-width: 43px; max-width: 43px; }
   table.rota tfoot td, table.rota tfoot th { font-size: .58rem; padding: 4px 2px; }
   .cell { gap: 3px; min-height: 46px; }
-  .pill { padding: 3px 1px; font-size: .6rem; line-height: 1.2; text-align: center; white-space: normal; border-radius: 6px; }
+  .pill { padding: 3px 1px; font: 600 .62rem/1.2 var(--body); text-align: center; white-space: normal; border-radius: 6px; }
   .pill small { font-size: .55rem; }
   .worked { font-size: .55rem; padding: 2px; white-space: normal; text-align: center; }
   .worked small { display: none; }
@@ -794,6 +794,14 @@ button.note-item:hover { background: var(--bg); }
   };
   function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function pad(n) { return String(n).padStart(2, "0"); }
+  // 12-hour clock for display: "09:00" -> "9am", "14:30" -> "2:30pm". Times are still stored as 24-hour.
+  function t12(hm) {
+    const m = /^(\d{1,2}):(\d{2})/.exec(String(hm || ""));
+    if (!m) return String(hm || "");
+    const h = Number(m[1]) % 24, ap = h < 12 ? "am" : "pm", h12 = h % 12 || 12;
+    return h12 + (m[2] === "00" ? "" : ":" + m[2]) + ap;
+  }
+  function tr12(a, b) { return t12(a) + "–" + t12(b); }
   function iso(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
   function parseIso(s) { const p = s.split("-").map(Number); return new Date(p[0], p[1] - 1, p[2]); }
   function addDays(isoStr, n) { const d = parseIso(isoStr); d.setDate(d.getDate() + n); return iso(d); }
@@ -1096,7 +1104,7 @@ button.note-item:hover { background: var(--bg); }
   }
   function demoLeave(l) { const ctx = demoCtx(), rec = demoRec(l.staff); return Object.assign({}, l, { days: hmLeaveAmount(l, rec, ctx), unit: rec.unit }); }
   function demoAllowance(s, year) { return hmAllowance(demoRec(s), year, demoCtx()); }
-  function shiftText(x) { return niceDate(x.date) + " " + x.start + "–" + x.finish; }
+  function shiftText(x) { return niceDate(x.date) + " " + tr12(x.start, x.finish); }
   function demoInbox() {
     return DEMO_STAFF.map(n => {
       const th = db().msgs.filter(m => m.staff === n).sort((a, b) => b.at - a.at);
@@ -1198,14 +1206,14 @@ button.note-item:hover { background: var(--bg); }
       if (open.date !== n.date && !(open.date === addDays(n.date, -1) && toMin(n.time) < toMin(open.start))) {
         if (!f) throw new Error("NEEDS_FINISH");
         finish = f; open.source = "Clock (finish added)";
-        demoNotify(DEMO_MANAGER, "hours", s + " forgot to clock out on " + niceDate(open.date) + " and entered " + open.start + "–" + f + ". Please check it.");
+        demoNotify(DEMO_MANAGER, "hours", s + " forgot to clock out on " + niceDate(open.date) + " and entered " + tr12(open.start, f) + ". Please check it.");
       }
       if (finish === open.start) finish = pad(Math.floor((toMin(finish) + 1) / 60) % 24) + ":" + pad((toMin(finish) + 1) % 60);
       open.finish = finish; open.outLoc = where.text; dbSave(); return withMins(open);
     }),
     addEntry: e => ok(() => {
       const x = { id: "h" + Date.now(), staff: e.staff, date: e.date, start: e.start, finish: e.finish, breakMins: e.breakMins, source: "Manual" };
-      demoNotify(DEMO_MANAGER, "hours", e.staff + " added a shift by hand: " + niceDate(e.date) + " " + e.start + "–" + e.finish + (e.breakMins ? ", " + e.breakMins + "m break" : "") + ". Please check it.");
+      demoNotify(DEMO_MANAGER, "hours", e.staff + " added a shift by hand: " + niceDate(e.date) + " " + tr12(e.start, e.finish) + (e.breakMins ? ", " + e.breakMins + "m break" : "") + ". Please check it.");
       db().hours.push(x); dbSave(); return withMins(x);
     }),
     deleteEntry: (s, id) => ok(() => { demoDb.hours = db().hours.filter(e => e.id !== id); dbSave(); return true; }),
@@ -1662,7 +1670,7 @@ button.note-item:hover { background: var(--bg); }
         } else {
           shifts.forEach((s, k) => {
             const li = el("li", cls);
-            li.append(el("span", "rd", k ? "" : dayName), el("span", "rt", s.start + "–" + s.finish), el("span", "rh", hShort(spanMins(s.start, s.finish, 0))));
+            li.append(el("span", "rd", k ? "" : dayName), el("span", "rt", tr12(s.start, s.finish)), el("span", "rh", hShort(spanMins(s.start, s.finish, 0))));
             if (s.note) li.appendChild(el("span", "rn", s.note));
             ul.appendChild(li);
           });
@@ -1678,7 +1686,7 @@ button.note-item:hover { background: var(--bg); }
           const inner = el("ul");
           day.forEach(s => {
             const li = el("li", s.staff === me ? "me" : "");
-            li.append(el("span", null, s.staff + (s.note ? " · " + s.note : "")), el("span", "t", s.start + "–" + s.finish));
+            li.append(el("span", null, s.staff + (s.note ? " · " + s.note : "")), el("span", "t", tr12(s.start, s.finish)));
             inner.appendChild(li);
           });
           hols.forEach(l => {
@@ -2043,7 +2051,7 @@ button.note-item:hover { background: var(--bg); }
       const elapsed = () => (Date.now() - started.getTime()) / 60000;
       if (open.needsFinish || elapsed() > 16 * 60) {
         card.append(el("h2", null, "You're still clocked in"));
-        card.appendChild(el("p", "sub", "You clocked in on " + niceDate(open.date) + " at " + open.start + " and didn't clock out. What time did you finish?"));
+        card.appendChild(el("p", "sub", "You clocked in on " + niceDate(open.date) + " at " + t12(open.start) + " and didn't clock out. What time did you finish?"));
         const f = el("form");
         const fld = el("div", "field");
         const lab = el("label", null, "Finish time"); lab.htmlFor = "fixFinish";
@@ -2064,7 +2072,7 @@ button.note-item:hover { background: var(--bg); }
       }
       const status = el("div", "clock-status");
       const left = el("div");
-      const lbl = el("div", "label"); lbl.append(el("span", "pulse"), "Clocked in at " + open.start + (open.inLoc && placeName(open.inLoc) !== "No location" ? " · " + placeName(open.inLoc) : ""));
+      const lbl = el("div", "label"); lbl.append(el("span", "pulse"), "Clocked in at " + t12(open.start) + (open.inLoc && placeName(open.inLoc) !== "No location" ? " · " + placeName(open.inLoc) : ""));
       const big = el("div", "big");
       const paint = () => { const m = elapsed(); big.innerHTML = ""; big.append(String(Math.floor(m / 60))); big.appendChild(el("small", null, "h")); big.append(" " + pad(Math.floor(m % 60))); big.appendChild(el("small", null, "m")); };
       paint(); clockTimer = setInterval(paint, 15000);
@@ -2109,7 +2117,7 @@ button.note-item:hover { background: var(--bg); }
   function planLine(todays) {
     const p = el("div", "today-plan");
     p.append("On the rota today: ");
-    todays.forEach((s, i) => { if (i) p.append(", "); p.appendChild(el("b", null, s.start + "–" + s.finish)); });
+    todays.forEach((s, i) => { if (i) p.append(", "); p.appendChild(el("b", null, tr12(s.start, s.finish))); });
     return p;
   }
 
@@ -2136,11 +2144,11 @@ button.note-item:hover { background: var(--bg); }
       if (dir === "in") {
         const e = await api.clockIn(me, loc);
         replaceEntry(e);
-        toast("Clocked in at " + e.start + (e.site ? " · " + e.site : ""));
+        toast("Clocked in at " + t12(e.start) + (e.site ? " · " + e.site : ""));
       } else {
         const e = await api.clockOut(me, "", loc);
         replaceEntry(e);
-        toast("Clocked out at " + e.finish + " · " + hm(e.mins));
+        toast("Clocked out at " + t12(e.finish) + " · " + hm(e.mins));
       }
     } catch (err) {
       if (/NEEDS_FINISH/.test(errText(err))) {
@@ -2375,8 +2383,10 @@ button.note-item:hover { background: var(--bg); }
     });
     thead.appendChild(hr); tbl.appendChild(thead);
 
-    const names = adm.staff.slice();
-    adm.rota.concat(adm.worked).forEach(x => { if (names.indexOf(x.staff) === -1) names.push(x.staff); });
+    const off = adm.offRota || [];
+    // Staff marked "On rota: No" (Staff tab column L) stay off the grid unless they have a shift that week
+    const names = adm.staff.filter(n => off.indexOf(n) === -1 || adm.rota.some(s => s.staff === n));
+    adm.rota.concat(adm.worked.filter(x => off.indexOf(x.staff) === -1)).forEach(x => { if (names.indexOf(x.staff) === -1) names.push(x.staff); });
     const tbody = el("tbody");
     if (!names.length) {
       const tr = el("tr"), td = el("td", null, "Add staff names to the Staff tab of the spreadsheet to start planning."); td.colSpan = 8; td.style.padding = "16px";
@@ -2393,10 +2403,10 @@ button.note-item:hover { background: var(--bg); }
         const td = el("td", d === t ? "today" : "");
         const cell = el("div", "cell");
         adm.rota.filter(s => s.staff === name && s.date === d).sort((a, b) => a.start.localeCompare(b.start)).forEach(s => {
-          const b = el("button", "pill" + (ed && ed.id === s.id ? " sel" : "") + (s.saving ? " saving" : ""), s.start + "–" + s.finish);
+          const b = el("button", "pill" + (ed && ed.id === s.id ? " sel" : "") + (s.saving ? " saving" : ""), tr12(s.start, s.finish));
           b.type = "button";
           if (s.note) b.appendChild(el("small", null, s.note));
-          b.setAttribute("aria-label", "Edit " + name + "'s shift on " + niceDate(d) + ", " + s.start + " to " + s.finish);
+          b.setAttribute("aria-label", "Edit " + name + "'s shift on " + niceDate(d) + ", " + t12(s.start) + " to " + t12(s.finish));
           b.addEventListener("click", () => openEditor({ id: s.id, staff: name, days: new Set([d]), start: s.start, finish: s.finish, note: s.note || "" }));
           cell.appendChild(b);
         });
@@ -2406,7 +2416,7 @@ button.note-item:hover { background: var(--bg); }
           cell.appendChild(el("div", "holcell" + (l.status === "Pending" ? " pend" : ""), l.status === "Pending" ? "Holiday requested" : "Holiday"));
         });
         adm.worked.filter(x => x.staff === name && x.date === d).sort((a, b) => a.start.localeCompare(b.start)).forEach(x => {
-          const txt = x.open ? "In since " + x.start : x.start + "–" + x.finish + " · " + hShort(x.mins);
+          const txt = x.open ? "In since " + t12(x.start) : tr12(x.start, x.finish) + " · " + hShort(x.mins);
           const away = /^Away from work/.test(x.inLoc || "") || /^Away from work/.test(x.outLoc || "");
           const wv = el("div", "worked" + (x.source === "Manual" ? " man" : "") + (away ? " away" : ""), txt);
           const pIn = placeName(x.inLoc), pOut = placeName(x.outLoc);
@@ -2906,7 +2916,7 @@ button.note-item:hover { background: var(--bg); }
     $("edTitle").textContent = ed.id ? "Edit shift" : "New shift";
     $("edDaysLabel").textContent = ed.id ? "Day" : "Days (tap more than one to repeat)";
     const sel = $("edStaff"); sel.innerHTML = "";
-    adm.staff.forEach(n => { const o = el("option", null, n); o.value = n; if (n === ed.staff) o.selected = true; sel.appendChild(o); });
+    adm.staff.filter(n => (adm.offRota || []).indexOf(n) === -1 || n === ed.staff).forEach(n => { const o = el("option", null, n); o.value = n; if (n === ed.staff) o.selected = true; sel.appendChild(o); });
     $("edStart").value = ed.start; $("edFinish").value = ed.finish; $("edNote").value = ed.note;
     $("edDelete").hidden = !ed.id; $("edConfirm").hidden = true; $("edErr").hidden = true;
     renderEdDays(); renderPresets(); edTally();
@@ -2935,7 +2945,7 @@ button.note-item:hover { background: var(--bg); }
     const box = $("edPresets"); box.innerHTML = "";
     presets().forEach(k => {
       const [s, f] = k.split("–");
-      const c = el("button", "chip mono", k); c.type = "button";
+      const c = el("button", "chip", tr12(s, f)); c.type = "button";
       c.setAttribute("aria-pressed", String($("edStart").value === s && $("edFinish").value === f));
       c.addEventListener("click", () => { $("edStart").value = s; $("edFinish").value = f; renderPresets(); edTally(); });
       box.appendChild(c);
