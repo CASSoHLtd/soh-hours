@@ -600,6 +600,33 @@ button.note-item:hover { background: var(--bg); }
       </form>
     </section>
 
+    <section class="card" id="bankCard" aria-labelledby="bankTitle" hidden>
+      <div class="card-head"><h2 id="bankTitle">Banked hours</h2><span class="sub" id="bankYear"></span></div>
+      <p class="sub" style="margin-top:4px">Extra hours you've worked go here. They're added to your holiday entitlement (<span id="bankRate">8 hours = 1 day</span>), and you take them by requesting holiday as normal.</p>
+      <div class="allow" style="margin-top:12px">
+        <div class="stat"><div class="label">Banked this year</div><div class="v" id="bankTotal">–</div></div>
+        <div class="stat left"><div class="label">Added to holiday</div><div class="v" id="bankAdded">–</div></div>
+      </div>
+      <ul class="list" id="bankList" style="margin-top:14px"></ul>
+      <p class="empty" id="bankEmpty" hidden>No banked hours yet.</p>
+      <button class="btn ghost block" type="button" id="bankOpen" style="margin-top:14px">Add banked hours</button>
+      <form id="bankForm" novalidate hidden style="margin-top:14px">
+        <div class="row2">
+          <div class="field"><label for="bDate">Day worked</label><input type="date" id="bDate" required></div>
+          <div class="field"><label for="bHours">Extra hours</label><input type="number" id="bHours" min="0.25" max="16" step="0.25" inputmode="decimal" placeholder="e.g. 2"></div>
+        </div>
+        <div class="field">
+          <label for="bNote">What for <span class="sub" style="display:inline">(optional)</span></label>
+          <input type="text" id="bNote" maxlength="120" placeholder="e.g. Site survey ran late">
+        </div>
+        <p class="err" id="bankErr" hidden></p>
+        <div class="actions">
+          <button class="btn" type="submit" id="bankSave">Save</button>
+          <button class="btn ghost" type="button" id="bankCancel">Cancel</button>
+        </div>
+      </form>
+    </section>
+
 
     <div class="footer"><button class="link" type="button" data-go-admin>Manager sign in</button></div>
   </div>
@@ -1157,6 +1184,8 @@ button.note-item:hover { background: var(--bg); }
     sendManagerMessage: (p, s, t) => gs("sendManagerMessage", p, s, t),
     sendMessageAll: (p, t) => gs("sendMessageAll", p, t),
     cancelLeave: (s, id) => gs("cancelLeave", who(), id),
+    saveBanked: (s, item) => gs("saveBanked", who(), item),
+    deleteBanked: (s, id) => gs("deleteBanked", who(), id),
     setLeaveStatus: (p, id, st) => gs("setLeaveStatus", p, id, st),
     addCompanyHoliday: (p, n, a, b) => gs("addCompanyHoliday", p, n, a, b),
     deleteCompanyHoliday: (p, id) => gs("deleteCompanyHoliday", p, id),
@@ -1334,6 +1363,8 @@ button.note-item:hover { background: var(--bg); }
       demoNotify(DEMO_MANAGER, "holiday", s + " requested holiday: " + (a === b ? niceDate(a) : niceDate(a) + " – " + niceDate(b)) + " (" + amt(days, rec.unit) + ")" + (n ? " – \"" + n + "\"" : ""));
       db().leave.push(l); dbSave(); return l;
     }),
+    saveBanked: (s, item) => ok(() => { throw new Error("Banked hours aren't available in the demo."); }),
+    deleteBanked: (s, id) => ok(() => { throw new Error("Banked hours aren't available in the demo."); }),
     cancelLeave: (s, id) => ok(() => {
       const l = db().leave.find(x => x.id === id && x.staff === s);
       if (l && l.status !== "Pending") throw new Error("This holiday has already been confirmed. Ask Jackie to cancel it.");
@@ -1517,6 +1548,7 @@ button.note-item:hover { background: var(--bg); }
   let teamLeave = [];
   let allowance = [];
   let pattern = null;
+  let banked = null, bankEditId = null, bankConfirmId = null;
   let sites = [];
   let requireLocation = true;
   let clockErr = "";
@@ -1563,6 +1595,7 @@ button.note-item:hover { background: var(--bg); }
       myLeave = d.myLeave || [];
       teamLeave = d.teamLeave || [];
       allowance = d.allowance || [];
+      banked = d.banked || null;
       weekCache = {};
       pattern = d.pattern || null;
       sites = d.sites || [];
@@ -1716,6 +1749,77 @@ button.note-item:hover { background: var(--bg); }
   const STATUS_TAG = { Pending: ["pend", "Waiting for Jackie"], Approved: ["appr", "Confirmed"], Declined: ["decl", "Declined"] };
   let leaveConfirmId = null;
 
+  function renderBanked() {
+    const card = $("bankCard");
+    card.hidden = !banked;
+    if (!banked) return;
+    const yr = todayIso().slice(0, 4), a = allowance[0] || {};
+    const u = a.unit || "days";
+    $("bankYear").textContent = yr;
+    const hrs = banked.filter(b => b.date.slice(0, 4) === yr).reduce((n, b) => n + b.hours, 0);
+    $("bankTotal").textContent = amt(Math.round(hrs * 100) / 100, "hours");
+    $("bankAdded").textContent = u === "hours" ? amt(hrs, "hours") : amt(a.bankedAmount || 0, "days");
+    const dayLen = pattern && pattern.dayHours ? pattern.dayHours : 8;
+    $("bankRate").textContent = u === "hours" ? "hour for hour" : dayLen + " hours = 1 day";
+    const ul = $("bankList"); ul.innerHTML = "";
+    const list = banked.slice().sort((x, y) => y.date.localeCompare(x.date));
+    $("bankEmpty").hidden = list.length > 0;
+    list.forEach(b => {
+      const li = el("li", "shift" + (b.date.slice(0, 4) !== yr ? " past" : ""));
+      const when = el("span", "when", niceDate(b.date));
+      const note = el("span", "times", b.note || "");
+      note.style.fontFamily = "var(--body)";
+      li.append(when, el("span", "hrs", amt(b.hours, "hours")), note);
+      const acts = el("span", "del"); acts.style.display = "flex"; acts.style.gap = "14px";
+      const edit = el("button", "link", "Change"); edit.type = "button"; edit.style.fontSize = "inherit";
+      edit.addEventListener("click", () => openBankForm(b));
+      const del = el("button", "link", "Delete"); del.type = "button"; del.style.fontSize = "inherit";
+      del.addEventListener("click", () => { bankConfirmId = b.id; renderBanked(); });
+      acts.append(edit, del); li.appendChild(acts);
+      if (bankConfirmId === b.id) {
+        const c = el("div", "confirm");
+        const yes = el("button", "btn danger", "Delete"); yes.type = "button";
+        const no = el("button", "btn ghost", "Keep"); no.type = "button";
+        yes.addEventListener("click", async () => {
+          yes.disabled = true;
+          try { await api.deleteBanked(me, b.id); bankConfirmId = null; await loadStaffData(); renderStaff(); toast("Banked hours deleted"); }
+          catch (err) { toast(errText(err)); yes.disabled = false; }
+        });
+        no.addEventListener("click", () => { bankConfirmId = null; renderBanked(); });
+        c.append(el("span", null, "Delete this entry?"), yes, no);
+        li.appendChild(c);
+      }
+      ul.appendChild(li);
+    });
+  }
+  function openBankForm(b) {
+    bankEditId = b ? b.id : null;
+    $("bDate").value = b ? b.date : todayIso();
+    $("bDate").max = todayIso();
+    $("bHours").value = b ? b.hours : "";
+    $("bNote").value = b ? b.note : "";
+    $("bankErr").hidden = true;
+    $("bankSave").textContent = b ? "Save changes" : "Add";
+    $("bankForm").hidden = false; $("bankOpen").hidden = true;
+    $("bHours").focus();
+  }
+  function closeBankForm() { bankEditId = null; $("bankForm").hidden = true; $("bankOpen").hidden = false; }
+  async function saveBankForm(ev) {
+    ev.preventDefault();
+    const err = m => { $("bankErr").textContent = m; $("bankErr").hidden = !m; };
+    const d = $("bDate").value, h = Number($("bHours").value);
+    if (!d) return err("Pick the day you worked.");
+    if (!(h > 0 && h <= 16)) return err("Enter how many extra hours (up to 16).");
+    const btn = $("bankSave"); btn.disabled = true;
+    try {
+      await api.saveBanked(me, { id: bankEditId, date: d, hours: h, note: $("bNote").value.trim() });
+      const was = bankEditId; closeBankForm();
+      await loadStaffData(); renderStaff();
+      toast(was ? "Banked hours updated" : "Banked hours added");
+    } catch (e) { err(errText(e)); }
+    btn.disabled = false;
+  }
+
   function rangeText(l) {
     return l.from === l.to ? niceDate(l.from) : niceDate(l.from) + " – " + niceDate(l.to);
   }
@@ -1739,6 +1843,7 @@ button.note-item:hover { background: var(--bg); }
     if (a && a.proRata) bits.push("Pro rata from " + niceDate(a.start) + " (full year: " + amt(a.fullEntitlement, u) + ").");
     if (a && a.compulsory) bits.push("Booked includes " + amt(a.compulsory, u) + " of compulsory holiday.");
     if (a && a.pending) bits.push(amt(a.pending, u) + " waiting for Jackie to confirm.");
+    if (a && a.bankedHours) bits.push("Entitlement includes " + amt(a.bankedAmount, u) + " from " + amt(a.bankedHours, "hours") + " of banked hours.");
     if (!ent) bits.push("Your entitlement hasn't been set yet. Ask Jackie.");
     else bits.push("Bank holidays are included, so book them off if you're not working.");
     $("aNote").textContent = bits.join(" ");
@@ -1760,6 +1865,7 @@ button.note-item:hover { background: var(--bg); }
 
   function renderLeave() {
     renderAllowance();
+    renderBanked();
     const ul = $("leaveList"); ul.innerHTML = "";
     const list = myLeave.slice().sort((a, b) => b.from.localeCompare(a.from));
     $("leaveEmpty").hidden = list.length > 0;
@@ -3117,6 +3223,9 @@ button.note-item:hover { background: var(--bg); }
     $("thisWeek").addEventListener("click", () => goWeek(0));
     $("copyWeek").addEventListener("click", copyLastWeek);
     $("fillUsual").addEventListener("click", fillUsualHours);
+    $("bankOpen").addEventListener("click", () => openBankForm(null));
+    $("bankCancel").addEventListener("click", closeBankForm);
+    $("bankForm").addEventListener("submit", saveBankForm);
     $("edForm").addEventListener("submit", saveEditor);
     $("edClose").addEventListener("click", () => { closeEditor(); renderGrid(); });
     ["edStart", "edFinish"].forEach(id => $(id).addEventListener("input", () => { renderPresets(); edTally(); }));
